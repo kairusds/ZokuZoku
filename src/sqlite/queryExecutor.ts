@@ -1,72 +1,77 @@
-import { CliDatabase } from "./cliDatabase";
+import { SqlDatabase } from "./sqliteDatabase";
 import { Database } from "./interfaces/database";
 import { extractStatements } from "./queryParser";
 import { ResultSet } from "./common";
-import { QueryResult } from ".";
 import { Statement } from "./interfaces/statement";
+import { QueryResult } from ".";
 
 export interface QueryExecutionOptions {
     sql: string[]; // sql to execute before executing the query (e.g ATTACH DATABASE <path>; PRAGMA foreign_keys = ON; ecc)
 }
 
-export function executeQuery(sqlite3: string, dbPath: string, query: string, options: QueryExecutionOptions = {sql: []}): Promise<QueryResult> {
-    if (!sqlite3) {
-        return Promise.reject(new Error(`Unable to execute query: SQLite command is not valid: '${sqlite3}'`));
-    }
-
-    /*
-    logger.debug(`SQLite3 command: '${sqlite3}'`);
-    logger.debug(`Database path: '${dbPath}'`);
-    logger.debug(`Query: ${query}`);
-    */
-
-    // extract the statements from the query
-    let statements: Statement[];
-    try {
-        statements = extractStatements(query);
-    } catch (err) {
-        return Promise.reject(`Unable to execute query: ${(err as Error).message}`);
-    }
-
-    /*
-    logger.debug(`Query execution options: ${JSON.stringify(options)}`);
-    logger.debug(`Statements: ${JSON.stringify(statements)}`);
-    */
-
-    let resultSet: ResultSet = [];
-    let error: Error|undefined;
-
-    return new Promise((resolve, reject) => {
-        let database: Database;
-
-        database = new CliDatabase(sqlite3, dbPath, (err) => {
-            // there was an error opening the database, reject
-            error = err;
-        });
-
-        // execute sql before the queries, reject if there is any error
-        for(let sql of options.sql) {
-            database.execute(sql, (_rows, err) => {
-                if (err) {
-                    error = new Error(`Failed to setup database: ${err.message}`);
-                }
-            });
+export function executeQuery(dbPath: string, query: string, options: QueryExecutionOptions = {sql: []}): Promise<QueryResult> {
+    return new Promise((resolve) => {
+        let statements: Statement[];
+        try {
+            statements = extractStatements(query);
+        } catch (err) {
+            resolve({ error: new Error(`Unable to execute query: ${(err as Error).message}`) });
+            return;
         }
 
-        // execute statements
-        for(let statement of statements) {
-            database.execute(statement.sql, (rows, err) => {
-                if (err) {
-                    error = err;
-                } else {
-                    let header = rows.length > 1? rows.shift() : [];
-                    resultSet.push({stmt: statement.sql, header: header!, rows});
-                }
-            });
-        }
+        let resultSet: ResultSet = [];
+        let error: Error | undefined;
 
-        database.close(() => {
-            resolve({resultSet, error});
+        const database: Database = new SqlDatabase(dbPath, (err) => {
+            if (err) {
+                error = err;
+                resolve({ resultSet, error });
+                return;
+            }
+            
+            const tasks: ((cb: () => void) => void)[] = [];
+
+            for (const sql of options.sql) {
+                tasks.push((cb) => {
+                    if (error) return cb();
+                    database.execute(sql, (_rows, err) => {
+                        if (err) {
+                            error = new Error(`Failed to setup database: ${err.message}`);
+                        }
+                        cb();
+                    });
+                });
+            }
+
+            for (const statement of statements) {
+                tasks.push((cb) => {
+                    if (error) return cb();
+                    database.execute(statement.sql, (rows, err) => {
+                        if (err) {
+                            error = err;
+                        } else {
+                            let header = rows.length > 0 ? (rows.shift() || []) : [];
+                            resultSet.push({ stmt: statement.sql, header: header!, rows });
+                        }
+                        cb();
+                    });
+                });
+            }
+            
+            let currentTask = 0;
+            const runNextTask = () => {
+                if (currentTask >= tasks.length || error) {
+                    database.close(() => {
+                        resolve({ resultSet, error });
+                    });
+                    return;
+                }
+                const task = tasks[currentTask];
+                currentTask++;
+                task(runNextTask);
+            };
+
+            runNextTask();
         });
     });
 }
