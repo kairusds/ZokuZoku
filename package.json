@@ -318,9 +318,9 @@
   },
   "dependencies": {
     "cricodecs": "^1.0.2",
-    "csv-parse": "^5.6.0",
-    "csv-parser": "^3.2.0",
-    "follow-redirects": "^1.15.11",
+    "csv-parse": "^5.5.5",
+    "csv-parser": "^2.3.5",
+    "follow-redirects": "^1.15.6",
     "json-to-ast": "^2.1.0",
     "pymport": "^1.5.1",
     "tar": "^6.2.1",
